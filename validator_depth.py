@@ -6,6 +6,7 @@ from bson import ObjectId
 from bson.timestamp import Timestamp
 from bson.decimal128 import Decimal128
 from bson.int64 import Int64
+import os
 
 EXCLUDE_KEYS = {"_key", "_id","_rev","_class","revision"}
 
@@ -19,12 +20,12 @@ class EnhancedJSONEncoder(json.JSONEncoder):
             return float(o.to_decimal())
         elif isinstance(o, Int64):
             return int(o)
-        elif hasattr(o, 'isoformat'):  # Handles custom datetime-like objects like DatetimeMS
+        elif hasattr(o, 'isoformat'):
             try:
                 return o.isoformat()
             except Exception:
-                pass
-        return super().default(o)
+                return str(o)  # fallback if isoformat fails
+        return str(o)
 
 
 def deep_compare(a, b, path=""):
@@ -88,19 +89,25 @@ def compare_document_sets(arango_map, mongo_map):
     logging.info("Missing in Mongo: %d, ids:%s", len(missing_in_mongo),missing_in_mongo)
     logging.info("Missing in Arango: %d, ids:%s", len(missing_in_arango), missing_in_arango)
     logging.info("Documents with field mismatches: %d", len(field_mismatches))
-    logging.info("Documents with field mismatches: %s", field_mismatches)
+    logging.info("Documents with field mismatches: %s",[doc["_id"] for doc  in field_mismatches])
+
 
 
     # with open("field_mismatches.json", "w") as f:
     #     json.dump(field_mismatches, f, indent=2, cls=EnhancedJSONEncoder)
 
+    output_path = os.path.abspath("field_mismatches.json")
     try:
-        with open("field_mismatches.json", "w") as f:
+        with open(output_path, "w") as f:
+            logging.info("writine to json")
             json.dump(field_mismatches, f, indent=2, cls=EnhancedJSONEncoder)
+            f.flush()
+            os.fsync(f.fileno())
+        logging.info("Field mismatches written to: %s", output_path)
     except TypeError as e:
         logging.error("Failed to write mismatches to JSON: %s", e)
 
-    return len(missing_in_arango) + len(missing_in_mongo) + len(field_mismatches)
+    return len(missing_in_mongo) ,len(missing_in_arango) ,len(field_mismatches)
     # return missing_in_mongo, missing_in_arango, field_mismatches
 
 
