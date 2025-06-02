@@ -1,13 +1,15 @@
 from pyArango.connection import *
 from pymongo import MongoClient
 from arango import ArangoClient
-from validate_date import compare_document_sets,EnhancedJSONEncoder
+from validation_ids import compare_document_sets,EnhancedJSONEncoder
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import datetime
 import sys
 from gc import collect
 from concurrent.futures import wait, FIRST_COMPLETED
+import json
+import queue
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -58,17 +60,17 @@ arango_db = arango_client.db(arangoDbName, username=ARANGO_USER, password=ARANGO
 arango_collection = arango_db.collection(collectionName)
 
 query = f"FOR e IN {collectionName} RETURN e"
-arango_cursor = arango_db.aql.execute(
-    query=query,
-    batch_size=BATCH_SIZE,
-    stream=True
-)
+# arango_cursor = arango_db.aql.execute(
+#     query=query,
+#     batch_size=BATCH_SIZE,
+#     stream=True
+# )
 
 mongo_client = MongoClient(mongoUri,datetime_conversion="DATETIME_AUTO")
 mongo_db = mongo_client[mongoDbName]
 mongo_collection = mongo_db[collectionName]
+mongo_cursor = mongo_collection.find({}, batch_size=BATCH_SIZE)
 
-# mongo_cursor = mongo_collection.find({}, batch_size=BATCH_SIZE)
 
 arango_count = arango_collection.count()
 mongo_count = mongo_collection.count_documents({})
@@ -85,23 +87,29 @@ summary = {
 }
 
 
-def process_batch(arango_batch):
-    doc_ids = [doc["_key"] for doc in arango_batch]
+def process_batch(mongo_batch):
+    doc_ids = [doc["_id"] for doc in mongo_batch]
     count = len(doc_ids)
-    mongo_batch = list(mongo_collection.find({"_id":{"$in":doc_ids}}))
+    # mongo_batch = list(mongo_collection.find({"_id":{"$in":doc_ids}}))
 
-    arango_batch_map = {doc["_key"]: doc for doc in arango_batch}
+    arango_cursor = arango_db.aql.execute(
+        f"FOR doc IN {collectionName} FILTER doc._key IN @keys RETURN doc",
+        bind_vars={"keys": doc_ids}
+    )
+    arango_batch_map = {doc["_key"]: doc for doc in arango_cursor}
+
     mongo_batch_map = {doc["_id"]: doc for doc in mongo_batch}
-    del arango_batch, mongo_batch, doc_ids
-    collect()
+    # del arango_batch, mongo_batch, doc_ids
+    # collect()
 
-    mongo_mismatch_count, arango_mismatch_count, field_mismatch_count = compare_document_sets(arango_batch_map, mongo_batch_map)
+    mongo_mismatch_count, arango_mismatch_count, field_mismatch_count, field_mismatches = compare_document_sets(arango_batch_map, mongo_batch_map)
 
     return {
         "count": count,
         "missing_in_mongo": mongo_mismatch_count,
         "missing_in_arango": arango_mismatch_count,
-        "field_mismatches": field_mismatch_count
+        "field_mismatches_count": field_mismatch_count,
+        "field_mismatches":field_mismatches
     }
 
 curr_time = datetime.datetime.now()
@@ -118,47 +126,65 @@ def batch_generator(cursor, batch_size):
 
 executor = ThreadPoolExecutor(max_workers=NUM_THREADS)
 
-def wait_and_fill_futures(executor, futures, batch_gen, summary, max_futures):
+def wait_and_fill_futures(executor, futures, batch_gen, summary):
     processed_batches = 0
     
-    while futures:
-        done, not_done = wait(futures, return_when=FIRST_COMPLETED)
+    first_entry = True
+    output_path = "field_mismatches.json"
+    with open(output_path, "w") as f:
+        f.write("[\n")
+        while futures:
+            done, not_done = wait(futures, return_when=FIRST_COMPLETED)
 
-        for future in done:
-            try:
-                result = future.result()
-                summary["total_count"] += result["count"]
-                summary["missing_in_mongo"] += result["missing_in_mongo"]
-                summary["missing_in_arango"] += result["missing_in_arango"]
-                summary["field_mismatches"] += result["field_mismatches"]
-                processed_batches += 1
-                # if processed_batches % 100 == 0:
-                logging.info("Processed %d batches...", processed_batches)
-            except Exception as e:
-                logging.exception("Batch execution failed", exc_info=e)
+            for future in done:
+                try:
+                    result = future.result()
+                    summary["total_count"] += result["count"]
+                    summary["missing_in_mongo"] += result["missing_in_mongo"]
+                    summary["missing_in_arango"] += result["missing_in_arango"]
+                    summary["field_mismatches"] += result["field_mismatches_count"]
+                    processed_batches += 1
+                    # if processed_batches % 100 == 0:
+                    for mismatch in result.get("field_mismatches", []):
+                        if not first_entry:
+                            f.write(",\n")
+                        json.dump(mismatch, f, cls=EnhancedJSONEncoder)
+                        # logging.info("written in file")
+                        first_entry = False
+                    logging.info("Processed %d batches...", processed_batches)
+                except Exception as e:
+                    logging.exception("Batch execution failed", exc_info=e)
 
-            # Immediately replace finished future with a new batch
-            try:
-                next_batch = next(batch_gen)
-                new_future = executor.submit(process_batch, next_batch)
-                not_done.add(new_future)
-            except StopIteration:
-                pass  # No more batches to submit
+                # Immediately replace finished future with a new batch
+                try:
+                    next_batch = next(batch_gen)
+                    new_future = executor.submit(process_batch, next_batch)
+                    not_done.add(new_future)
+                except StopIteration:
+                    pass  # No more batches to submit
 
-        futures = list(not_done)
+            futures = list(not_done)
+        f.write("\n]\n") 
 
-batch_gen = batch_generator(arango_cursor, BATCH_SIZE)
+batch_gen = batch_generator(mongo_cursor, BATCH_SIZE)
 futures = []
 
+# logging.info("initial batches %d",len(batch_gen))
+
+# batcheQueue = queue.Queue()
 # Initially fill the queue with NUM_THREADS + 2
-for _ in range(NUM_THREADS + 2):
+# for _ in range(NUM_THREADS+BUFFER):
+#     batcheQueue.put(next(batch_gen))
+
+
+for _ in range(NUM_THREADS):
     try:
-        batch = next(batch_gen)
-        futures.append(executor.submit(process_batch, batch))
+        futures.append(executor.submit(process_batch, next(batch_gen)))
     except StopIteration:
         break
+    logging.info("initial futures loaded: %d",len(futures))
 
-wait_and_fill_futures(executor, futures, batch_gen, summary, NUM_THREADS + 2)
+wait_and_fill_futures(executor, futures, batch_gen, summary)
 
 
 logging.info("summary: %s", summary)

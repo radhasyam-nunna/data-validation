@@ -13,7 +13,7 @@ from datetime import datetime,timezone
 
 
 
-EXCLUDE_KEYS = {"_key", "_id","_rev","_class","revision","rev","archived","appointmentId"}
+EXCLUDE_KEYS = {"_key", "_id","_rev","_class","revision","rev","archived","appointmentId","partNumber","label","make","inspectionId","workOrderId","vendorInvoiceNo"}
 
 class EnhancedJSONEncoder(json.JSONEncoder):
     def default(self, o):

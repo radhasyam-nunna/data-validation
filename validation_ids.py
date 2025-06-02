@@ -89,6 +89,7 @@ def compare_document_sets(arango_map, mongo_map):
             elif m_doc and not a_doc:
                 missing_in_arango.append(doc_id)
             else:
+                continue
                 mismatches = deep_compare(a_doc, m_doc)
                 if mismatches:
                     field_mismatches.append({
@@ -100,7 +101,8 @@ def compare_document_sets(arango_map, mongo_map):
 
 
     # logging.info("Missing in Mongo: %d, ids:%s", len(missing_in_mongo),missing_in_mongo)
-    # logging.info("Missing in Arango: %d, ids:%s", len(missing_in_arango), missing_in_arango)
+    if missing_in_arango:
+        logging.info("Missing in Arango: %d, ids:%s", len(missing_in_arango), missing_in_arango)
     # logging.info("Documents with field mismatches: %d", len(field_mismatches))
     if field_mismatches:
         logging.info("Documents with field mismatches: len:%d ids:%s",len(field_mismatches),[doc["_id"] for doc  in field_mismatches])
