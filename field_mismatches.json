@@ -1,3 +1,0 @@
-[
-{"_id": "21549036", "mismatches": [{"path": "createdAt", "type": "value_mismatch", "arango_value": "1637474686.174086000", "mongo_value": "2021-11-21T06:04:46.174000"}, {"path": "updatedAt", "type": "value_mismatch", "arango_value": "1646378107.952055000", "mongo_value": "2022-03-04T07:15:07.952000"}]}
-]

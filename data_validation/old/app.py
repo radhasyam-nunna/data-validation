@@ -1,7 +1,7 @@
 from pyArango.connection import *
 from pymongo import MongoClient
 from arango import ArangoClient
-from validate_date import compare_document_sets,EnhancedJSONEncoder
+from data_validation.validate_date import compare_document_sets,EnhancedJSONEncoder
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import datetime

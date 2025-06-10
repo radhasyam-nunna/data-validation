@@ -32,8 +32,8 @@ MONGO_URI_PROD = "mongodb+srv://refurb-service:xKoyEcn7NFzRjTaA@refurb-prod.rils
 MONGO_DB_SERVICE = "refurb-service"
 MONGO_DB_SCHEMA = "refurb-schema"
 
-BATCH_SIZE = 200
-NUM_THREADS = 8
+BATCH_SIZE = 100
+NUM_THREADS = 5
 BUFFER = 2
 
 arangoHost = ARANGO_HOST
@@ -69,7 +69,7 @@ query = f"FOR e IN {collectionName} RETURN e"
 mongo_client = MongoClient(mongoUri,datetime_conversion="DATETIME_AUTO")
 mongo_db = mongo_client[mongoDbName]
 mongo_collection = mongo_db[collectionName]
-mongo_cursor = mongo_collection.find({},{'_id':1}, batch_size=BATCH_SIZE)
+mongo_cursor = mongo_collection.find({}, batch_size=BATCH_SIZE)
 
 
 arango_count = arango_collection.count()
@@ -88,12 +88,14 @@ summary = {
 
 
 def process_batch(mongo_batch):
-    doc_ids = [doc["_id"] for doc in mongo_batch]
+    # print("mongo batch",mongo_batch)
+    doc_ids = [str(doc["_id"]) for doc in mongo_batch]
+    print(doc_ids)
     count = len(doc_ids)
     # mongo_batch = list(mongo_collection.find({"_id":{"$in":doc_ids}}))
 
     arango_cursor = arango_db.aql.execute(
-        f"FOR doc IN {collectionName} FILTER doc._key IN @keys RETURN {{'_key': doc._key}}",
+        f"FOR doc IN {collectionName} FILTER doc._key IN @keys RETURN doc",
         bind_vars={"keys": doc_ids}
     )
     arango_batch_map = {doc["_key"]: doc for doc in arango_cursor}
@@ -130,7 +132,7 @@ def wait_and_fill_futures(executor, futures, batch_gen, summary):
     processed_batches = 0
     
     first_entry = True
-    output_path = f"field_mismatches_mongo_{collectionName}.json"
+    output_path = "field_mismatches.json"
     with open(output_path, "w") as f:
         f.write("[\n")
         while futures:
@@ -151,9 +153,7 @@ def wait_and_fill_futures(executor, futures, batch_gen, summary):
                         json.dump(mismatch, f, cls=EnhancedJSONEncoder)
                         # logging.info("written in file")
                         first_entry = False
-                    if processed_batches%100==0:
-                        logging.info("Processed %d batches***", processed_batches)
-                    #logging.info("Processed %d batches...", processed_batches)
+                    logging.info("Processed %d batches...", processed_batches)
                 except Exception as e:
                     logging.exception("Batch execution failed", exc_info=e)
 

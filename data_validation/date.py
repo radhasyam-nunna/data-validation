@@ -1,7 +1,8 @@
 from pyArango.connection import *
 from pymongo import MongoClient
 from arango import ArangoClient
-from validation_ids import compare_document_sets,EnhancedJSONEncoder
+from validate_date import compare_document_sets,EnhancedJSONEncoder
+#from validator_depth import compare_document_sets,EnhancedJSONEncoder
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import datetime
@@ -12,7 +13,8 @@ import json
 import queue
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+from bson import ObjectId
+from bson.errors import InvalidId
 
 env = sys.argv[1]
 dbName = sys.argv[2]
@@ -32,8 +34,8 @@ MONGO_URI_PROD = "mongodb+srv://refurb-service:xKoyEcn7NFzRjTaA@refurb-prod.rils
 MONGO_DB_SERVICE = "refurb-service"
 MONGO_DB_SCHEMA = "refurb-schema"
 
-BATCH_SIZE = 200
-NUM_THREADS = 8
+BATCH_SIZE = 250
+NUM_THREADS = 10
 BUFFER = 2
 
 arangoHost = ARANGO_HOST
@@ -59,18 +61,17 @@ arango_client = ArangoClient(hosts=arangoHost,verify_override=False)
 arango_db = arango_client.db(arangoDbName, username=ARANGO_USER, password=ARANGO_PASS)
 arango_collection = arango_db.collection(collectionName)
 
-query = f"FOR e IN {collectionName} RETURN e"
-# arango_cursor = arango_db.aql.execute(
-#     query=query,
-#     batch_size=BATCH_SIZE,
-#     stream=True
-# )
+query = f"FOR e IN {collectionName}  RETURN e"
+#query = f"FOR e IN inspection_view_desc  RETURN e"
+arango_cursor = arango_db.aql.execute(
+    query=query,
+    batch_size=BATCH_SIZE,
+    stream=True
+)
 
 mongo_client = MongoClient(mongoUri,datetime_conversion="DATETIME_AUTO")
 mongo_db = mongo_client[mongoDbName]
 mongo_collection = mongo_db[collectionName]
-mongo_cursor = mongo_collection.find({},{'_id':1}, batch_size=BATCH_SIZE)
-
 
 arango_count = arango_collection.count()
 mongo_count = mongo_collection.count_documents({})
@@ -86,18 +87,18 @@ summary = {
     "field_mismatches": 0
 }
 
+def to_object_id_safe(value):
+    try:
+        return ObjectId(value)
+    except (InvalidId, TypeError):
+        return value
 
-def process_batch(mongo_batch):
-    doc_ids = [doc["_id"] for doc in mongo_batch]
+def process_batch(arango_batch):
+    doc_ids = [to_object_id_safe(doc["_key"]) for doc in arango_batch]
     count = len(doc_ids)
-    # mongo_batch = list(mongo_collection.find({"_id":{"$in":doc_ids}}))
+    mongo_batch = list(mongo_collection.find({"_id":{"$in":doc_ids}}))
 
-    arango_cursor = arango_db.aql.execute(
-        f"FOR doc IN {collectionName} FILTER doc._key IN @keys RETURN {{'_key': doc._key}}",
-        bind_vars={"keys": doc_ids}
-    )
-    arango_batch_map = {doc["_key"]: doc for doc in arango_cursor}
-
+    arango_batch_map = {doc["_key"]: doc for doc in arango_batch}
     mongo_batch_map = {doc["_id"]: doc for doc in mongo_batch}
     # del arango_batch, mongo_batch, doc_ids
     # collect()
@@ -130,7 +131,7 @@ def wait_and_fill_futures(executor, futures, batch_gen, summary):
     processed_batches = 0
     
     first_entry = True
-    output_path = f"field_mismatches_mongo_{collectionName}.json"
+    output_path = f"field_mismatches_date_{collectionName}.json"
     with open(output_path, "w") as f:
         f.write("[\n")
         while futures:
@@ -151,9 +152,9 @@ def wait_and_fill_futures(executor, futures, batch_gen, summary):
                         json.dump(mismatch, f, cls=EnhancedJSONEncoder)
                         # logging.info("written in file")
                         first_entry = False
+                   # logging.info("Processed %d batches...", processed_batches)
                     if processed_batches%100==0:
                         logging.info("Processed %d batches***", processed_batches)
-                    #logging.info("Processed %d batches...", processed_batches)
                 except Exception as e:
                     logging.exception("Batch execution failed", exc_info=e)
 
@@ -168,7 +169,7 @@ def wait_and_fill_futures(executor, futures, batch_gen, summary):
             futures = list(not_done)
         f.write("\n]\n") 
 
-batch_gen = batch_generator(mongo_cursor, BATCH_SIZE)
+batch_gen = batch_generator(arango_cursor, BATCH_SIZE)
 futures = []
 
 # logging.info("initial batches %d",len(batch_gen))
